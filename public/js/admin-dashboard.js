@@ -226,18 +226,61 @@ function renderBooksTable(books) {
     }).join('');
 }
 
-// Search Books Function
+// Search Books Function - Server-side with debounce
+let searchTimeout = null;
 function searchBooks() {
-    const searchValue = document.getElementById('searchBooks').value.toLowerCase();
+    const searchValue = document.getElementById('searchBooks').value.trim();
     const categoryFilter = document.getElementById('filterCategory').value;
     
+    // Clear previous timeout
+    if (searchTimeout) clearTimeout(searchTimeout);
+    
+    // If search is empty, show all books (filtered by category)
+    if (searchValue.length === 0) {
+        let filtered = allBooks;
+        if (categoryFilter) {
+            filtered = allBooks.filter(book => book.category_name === categoryFilter);
+        }
+        renderBooksTable(filtered);
+        return;
+    }
+    
+    // Wait 300ms before searching (debounce)
+    searchTimeout = setTimeout(() => {
+        // Use server-side search if query is 2+ characters
+        if (searchValue.length >= 2) {
+            fetch(`../../controllers/SearchController.php?q=${encodeURIComponent(searchValue)}&limit=50`)
+                .then(response => response.json())
+                .then(result => {
+                    if (result.success) {
+                        let filtered = result.data;
+                        // Apply category filter if selected
+                        if (categoryFilter) {
+                            filtered = filtered.filter(book => book.category_name === categoryFilter);
+                        }
+                        renderBooksTable(filtered);
+                    }
+                })
+                .catch(error => {
+                    console.error('Search error:', error);
+                    // Fallback to client-side search
+                    clientSideSearch(searchValue, categoryFilter);
+                });
+        } else {
+            // Fallback to client-side for short queries
+            clientSideSearch(searchValue, categoryFilter);
+        }
+    }, 300);
+}
+
+// Fallback client-side search
+function clientSideSearch(searchValue, categoryFilter) {
     const filtered = allBooks.filter(book => {
-        const matchSearch = book.book_title.toLowerCase().includes(searchValue) || 
-                          (book.author && book.author.toLowerCase().includes(searchValue));
+        const matchSearch = book.book_title.toLowerCase().includes(searchValue.toLowerCase()) || 
+                          (book.author && book.author.toLowerCase().includes(searchValue.toLowerCase()));
         const matchCategory = !categoryFilter || book.category_name === categoryFilter;
         return matchSearch && matchCategory;
     });
-    
     renderBooksTable(filtered);
 }
 
@@ -276,7 +319,7 @@ function editBook(bookId) {
                 document.getElementById('bookPublisher').value = book.publisher || '';
                 document.getElementById('bookYear').value = book.published_year ? new Date(book.published_year).getFullYear() : '';
                 document.getElementById('bookCategory').value = book.category_id;
-                document.getElementById('bookDescription').value = book.description || '';
+                document.getElementById('bookDescription').value = book.sinopsis || '';
                 
                 // Show cover preview
                 const preview = document.getElementById('coverPreview');
@@ -333,7 +376,7 @@ function handleAddBook(event) {
     formData.append('publisher', document.getElementById('bookPublisher').value);
     formData.append('published_year', document.getElementById('bookYear').value);
     formData.append('category_id', document.getElementById('bookCategory').value);
-    formData.append('description', document.getElementById('bookDescription').value);
+    formData.append('sinopsis', document.getElementById('bookDescription').value);
     
     // Handle file upload
     const coverInput = document.getElementById('bookCover');

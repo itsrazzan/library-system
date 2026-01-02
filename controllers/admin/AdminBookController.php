@@ -67,7 +67,7 @@ try {
                     'author' => isset($_POST['author']) ? trim($_POST['author']) : '',
                     'publisher' => isset($_POST['publisher']) ? trim($_POST['publisher']) : '',
                     'published_year' => isset($_POST['published_year']) ? $_POST['published_year'] . '-01-01' : null,
-                    'description' => isset($_POST['description']) ? trim($_POST['description']) : '',
+                    'sinopsis' => isset($_POST['sinopsis']) ? trim($_POST['sinopsis']) : '',
                     'image_path' => $book->getDefaultImage()
                 ];
 
@@ -113,7 +113,7 @@ try {
                     'author' => isset($_POST['author']) ? trim($_POST['author']) : $existing['author'],
                     'publisher' => isset($_POST['publisher']) ? trim($_POST['publisher']) : $existing['publisher'],
                     'published_year' => isset($_POST['published_year']) ? $_POST['published_year'] . '-01-01' : $existing['published_year'],
-                    'description' => isset($_POST['description']) ? trim($_POST['description']) : $existing['description'],
+                    'sinopsis' => isset($_POST['sinopsis']) ? trim($_POST['sinopsis']) : $existing['sinopsis'],
                     'image_path' => $existing['image_path']
                 ];
 
