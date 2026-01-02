@@ -173,5 +173,186 @@ class BookLending {
             return false;
         }
     }
+
+    /**
+     * Get borrowings by user ID (for RLS filter)
+     * @param int $userId
+     * @return array
+     */
+    public function getBorrowingsByUser($userId) {
+        $query = "SELECT 
+                    bl.loan_id,
+                    bl.book_id,
+                    bl.loan_date,
+                    bl.due_date,
+                    bl.return_date,
+                    b.book_title,
+                    b.author,
+                    b.image_path,
+                    b.sinopsis,
+                    c.category_name,
+                    CASE WHEN bl.return_date IS NULL AND bl.due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
+                    CASE WHEN bl.return_date IS NULL AND bl.due_date < CURRENT_DATE 
+                         THEN (CURRENT_DATE - bl.due_date) ELSE 0 END as days_overdue
+                  FROM " . $this->table_name . " bl
+                  INNER JOIN book b ON bl.book_id = b.book_id
+                  LEFT JOIN bookcategory c ON b.category_id = c.category_id
+                  WHERE bl.id = :user_id
+                  ORDER BY bl.loan_date DESC";
+        
+        try {
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':user_id', $userId, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error in getBorrowingsByUser(): " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Get active borrowings by user ID
+     * @param int $userId
+     * @return array
+     */
+    public function getActiveBorrowingsByUser($userId) {
+        $query = "SELECT 
+                    bl.loan_id,
+                    bl.book_id,
+                    bl.loan_date,
+                    bl.due_date,
+                    b.book_title,
+                    b.author,
+                    b.image_path,
+                    b.sinopsis,
+                    c.category_name,
+                    CASE WHEN bl.due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
+                    CASE WHEN bl.due_date < CURRENT_DATE 
+                         THEN (CURRENT_DATE - bl.due_date) ELSE 0 END as days_overdue,
+                    CASE WHEN bl.due_date < CURRENT_DATE 
+                         THEN (CURRENT_DATE - bl.due_date) * 2000 ELSE 0 END as penalty_amount
+                  FROM " . $this->table_name . " bl
+                  INNER JOIN book b ON bl.book_id = b.book_id
+                  LEFT JOIN bookcategory c ON b.category_id = c.category_id
+                  WHERE bl.id = :user_id AND bl.return_date IS NULL
+                  ORDER BY bl.due_date ASC";
+        
+        try {
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':user_id', $userId, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error in getActiveBorrowingsByUser(): " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Calculate penalty for a loan (Rp 2.000 per day)
+     * @param string $dueDate
+     * @param int $baseRate Default 2000
+     * @return int Penalty in Rupiah
+     */
+    public static function calculatePenalty($dueDate, $baseRate = 2000) {
+        $today = new DateTime();
+        $due = new DateTime($dueDate);
+        
+        if ($today <= $due) {
+            return 0; // Not late
+        }
+        
+        $daysLate = $today->diff($due)->days;
+        return $baseRate * $daysLate;
+    }
+
+    /**
+     * Get total penalty for a user
+     * @param int $userId
+     * @return int
+     */
+    public function getTotalPenaltyByUser($userId) {
+        $query = "SELECT COALESCE(SUM(large_fines), 0) as total 
+                  FROM penalty WHERE id = :user_id";
+        
+        try {
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':user_id', $userId, PDO::PARAM_INT);
+            $stmt->execute();
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return (int) $row['total'];
+        } catch (PDOException $e) {
+            error_log("Error in getTotalPenaltyByUser(): " . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Get member statistics from mv_statistik_member
+     * @param int $userId
+     * @return array|null
+     */
+    public function getMemberStats($userId) {
+        $query = "SELECT * FROM mv_statistik_member WHERE id = :user_id LIMIT 1";
+        
+        try {
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':user_id', $userId, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error in getMemberStats(): " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Create a new loan
+     * @param int $userId
+     * @param int $bookId
+     * @param int $durationDays Default 14
+     * @return int|false loan_id or false
+     */
+    public function createLoan($userId, $bookId, $durationDays = 14) {
+        $query = "INSERT INTO " . $this->table_name . " 
+                  (loan_id, id, book_id, loan_date, due_date)
+                  VALUES (
+                    (SELECT COALESCE(MAX(loan_id), 0) + 1 FROM booklending),
+                    :user_id, :book_id, CURRENT_DATE, CURRENT_DATE + :duration
+                  )
+                  RETURNING loan_id";
+        
+        try {
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':user_id', $userId, PDO::PARAM_INT);
+            $stmt->bindParam(':book_id', $bookId, PDO::PARAM_INT);
+            $stmt->bindParam(':duration', $durationDays, PDO::PARAM_INT);
+            $stmt->execute();
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($result) {
+                // Refresh materialized view
+                $this->refreshMV('mv_statistik_member');
+                return $result['loan_id'];
+            }
+            return false;
+        } catch (PDOException $e) {
+            error_log("Error in createLoan(): " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Refresh materialized view
+     * @param string $mvName
+     */
+    private function refreshMV($mvName) {
+        try {
+            $this->conn->exec("REFRESH MATERIALIZED VIEW {$mvName}");
+        } catch (PDOException $e) {
+            error_log("Error refreshing MV {$mvName}: " . $e->getMessage());
+        }
+    }
 }
 ?>

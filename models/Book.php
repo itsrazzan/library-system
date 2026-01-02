@@ -28,7 +28,7 @@ class Book {
                     b.published_year,
                     b.image_path,
                     b.book_status,
-                    b.description,
+                    b.sinopsis,
                     c.category_id,
                     c.category_name
                   FROM " . $this->table_name . " b
@@ -60,7 +60,7 @@ class Book {
                     b.published_year,
                     b.image_path,
                     b.book_status,
-                    b.description,
+                    b.sinopsis,
                     c.category_id,
                     c.category_name,
                     c.explanation as category_explanation
@@ -88,8 +88,8 @@ class Book {
      */
     public function createBook($data) {
         $query = "INSERT INTO " . $this->table_name . " 
-                  (book_id, category_id, book_title, author, publisher, published_year, image_path, description, book_status)
-                  VALUES ((SELECT COALESCE(MAX(book_id), 0) + 1 FROM book), :category_id, :book_title, :author, :publisher, :published_year, :image_path, :description, true)
+                  (book_id, category_id, book_title, author, publisher, published_year, image_path, sinopsis, book_status)
+                  VALUES ((SELECT COALESCE(MAX(book_id), 0) + 1 FROM book), :category_id, :book_title, :author, :publisher, :published_year, :image_path, :sinopsis, true)
                   RETURNING book_id";
         
         try {
@@ -101,12 +101,12 @@ class Book {
             // Handle nullable fields
             $publisher = !empty($data['publisher']) ? $data['publisher'] : null;
             $published_year = !empty($data['published_year']) ? $data['published_year'] : null;
-            $description = !empty($data['description']) ? $data['description'] : null;
+            $sinopsis = !empty($data['sinopsis']) ? $data['sinopsis'] : null;
             
             $stmt->bindParam(':publisher', $publisher);
             $stmt->bindParam(':published_year', $published_year);
             $stmt->bindParam(':image_path', $data['image_path']);
-            $stmt->bindParam(':description', $description);
+            $stmt->bindParam(':sinopsis', $sinopsis);
             
             $stmt->execute();
             $result = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -141,7 +141,7 @@ class Book {
                       publisher = :publisher,
                       published_year = :published_year,
                       image_path = :image_path,
-                      description = :description
+                      sinopsis = :sinopsis
                   WHERE book_id = :book_id";
         
         try {
@@ -153,7 +153,7 @@ class Book {
             $stmt->bindParam(':publisher', $data['publisher']);
             $stmt->bindParam(':published_year', $data['published_year']);
             $stmt->bindParam(':image_path', $data['image_path']);
-            $stmt->bindParam(':description', $data['description']);
+            $stmt->bindParam(':sinopsis', $data['sinopsis']);
             return $stmt->execute();
         } catch (PDOException $e) {
             error_log("Error in updateBook(): " . $e->getMessage());
@@ -185,30 +185,56 @@ class Book {
      * @return string|false Returns file path or false
      */
     public function uploadCover($file) {
-        $allowed_types = ['image/jpeg', 'image/png'];
+        $allowed_types = ['image/jpeg', 'image/png', 'image/webp'];
         $max_size = 5 * 1024 * 1024; // 5MB
         
         if (!in_array($file['type'], $allowed_types)) {
+            $this->lastError = 'Invalid file type. Allowed: JPG, PNG, WEBP';
+            error_log("Upload error: Invalid file type - " . $file['type']);
             return false;
         }
         
         if ($file['size'] > $max_size) {
+            $this->lastError = 'File too large. Max 5MB';
+            error_log("Upload error: File too large - " . $file['size']);
             return false;
         }
         
-        $upload_dir = $_SERVER['DOCUMENT_ROOT'] . '/NOVA-Library/public/img/books/';
+        // Get project root - resolve symlinks to get real path
+        // __DIR__ is /path/to/NOVA-Library/models
+        // We need /path/to/NOVA-Library
+        $project_root = realpath(__DIR__ . '/..'); // models -> NOVA-Library
+        $upload_dir = $project_root . '/public/img/books/';
+        
+        error_log("__DIR__: " . __DIR__);
+        error_log("Project root (realpath): " . $project_root);
+        error_log("Upload dir: " . $upload_dir);
+        
+        // Create directory if it doesn't exist
         if (!is_dir($upload_dir)) {
-            mkdir($upload_dir, 0755, true);
+            mkdir($upload_dir, 0777, true);
         }
         
-        $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
+        // Check if directory is writable
+        if (!is_writable($upload_dir)) {
+            $this->lastError = 'Upload directory is not writable: ' . $upload_dir;
+            error_log("Upload dir not writable: " . $upload_dir);
+            return false;
+        }
+        
+        $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
         $filename = 'book_' . time() . '_' . uniqid() . '.' . $extension;
         $filepath = $upload_dir . $filename;
         
+        error_log("Saving to: " . $filepath);
+        
         if (move_uploaded_file($file['tmp_name'], $filepath)) {
+            error_log("Upload successful: " . $filepath);
             return 'public/img/books/' . $filename;
         }
         
+        $this->lastError = 'Failed to move uploaded file. Check permissions.';
+        error_log("Upload failed: Could not move file to " . $filepath);
         return false;
     }
 
@@ -283,11 +309,12 @@ class Book {
     }
 
     /**
-     * Search books by title or author
+     * Search books by title, author, or category
      * @param string $keyword
+     * @param int $limit Max results (default 20)
      * @return PDOStatement|false
      */
-    public function searchBooks($keyword) {
+    public function searchBooks($keyword, $limit = 20) {
         $query = "SELECT 
                     b.book_id,
                     b.book_title,
@@ -296,18 +323,22 @@ class Book {
                     b.published_year,
                     b.image_path,
                     b.book_status,
+                    b.sinopsis,
                     c.category_name
                   FROM " . $this->table_name . " b
                   LEFT JOIN " . $this->category_table . " c 
                     ON b.category_id = c.category_id
                   WHERE b.book_title ILIKE :keyword 
                     OR b.author ILIKE :keyword
-                  ORDER BY b.book_title ASC";
+                    OR c.category_name ILIKE :keyword
+                  ORDER BY b.book_title ASC
+                  LIMIT :limit";
         
         try {
             $stmt = $this->conn->prepare($query);
             $search_term = '%' . $keyword . '%';
             $stmt->bindParam(':keyword', $search_term);
+            $stmt->bindParam(':limit', $limit, PDO::PARAM_INT);
             $stmt->execute();
             return $stmt;
         } catch (PDOException $e) {
@@ -398,6 +429,36 @@ class Book {
         } catch (PDOException $e) {
             error_log("Error in countAvailableBooks(): " . $e->getMessage());
             return 0;
+        }
+    }
+
+    /**
+     * Get popular books from view_buku_populer
+     * @param int $limit Max results (default 5)
+     * @return array
+     */
+    public function getPopularBooks($limit = 5) {
+        $query = "SELECT 
+                    v.book_title,
+                    v.total_dipinjam,
+                    b.book_id,
+                    b.author,
+                    b.image_path,
+                    c.category_name
+                  FROM view_buku_populer v
+                  LEFT JOIN book b ON v.book_title = b.book_title
+                  LEFT JOIN bookcategory c ON b.category_id = c.category_id
+                  ORDER BY v.total_dipinjam DESC
+                  LIMIT :limit";
+        
+        try {
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error in getPopularBooks(): " . $e->getMessage());
+            return [];
         }
     }
 }

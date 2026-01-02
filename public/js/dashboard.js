@@ -37,7 +37,7 @@ if (searchInput) {
         const query = e.target.value.trim();
         clearTimeout(searchTimeout);
 
-        if (query.length < 3) {
+        if (query.length < 2) {
             searchResults.classList.add('hidden');
             searchLoading.classList.add('hidden');
             return;
@@ -53,16 +53,29 @@ if (searchInput) {
 }
 
 /**
- * Search books from database
+ * Search books from database using server-side indexed search
  * @param {string} query - Search query
  */
 async function searchBooks(query) {
     try {
-        const response = await fetch('/NOVA-Library/api/search-books.php?q=' + encodeURIComponent(query));
-        if (!response.ok) throw new Error('Search failed');
+        // Use relative path from user dashboard location
+        const searchUrl = '../../controllers/SearchController.php?q=' + encodeURIComponent(query) + '&limit=10';
+        console.log('Searching:', searchUrl);
         
-        const books = await response.json();
-        displaySearchResults(books);
+        const response = await fetch(searchUrl);
+        console.log('Response status:', response.status);
+        
+        if (!response.ok) throw new Error('Search failed with status: ' + response.status);
+        
+        const result = await response.json();
+        console.log('Search result:', result);
+        
+        if (result.success) {
+            displaySearchResults(result.data);
+        } else {
+            console.log('Search not successful:', result.message);
+            displaySearchResults([]);
+        }
     } catch (error) {
         console.error('Search error:', error);
         displaySearchResults([]);
@@ -83,13 +96,20 @@ function displaySearchResults(books) {
     }
 
     resultsContainer.innerHTML = books.map(function(book) {
-        return `<div class="book-result-item flex items-start space-x-4 p-4 rounded-xl cursor-pointer mb-2">
+        const isAvailable = book.book_status === true || book.book_status === 't' || book.book_status === 1;
+        const imagePath = book.image_url || book.image_path || '/NOVA-Library/public/img/books/default-book.jpg';
+        
+        return `<div class="book-result-item flex items-start space-x-4 p-4 rounded-xl cursor-pointer mb-2 hover:bg-purple-50 transition">
+                    <img src="${imagePath.startsWith('/') ? imagePath : '/NOVA-Library/' + imagePath}" 
+                         alt="${book.book_title}" 
+                         class="w-12 h-16 object-cover rounded shadow"
+                         onerror="this.src='/NOVA-Library/public/img/books/default-book.jpg'">
                     <div class="flex-1">
-                        <h4 class="font-bold text-gray-900 mb-1">${book.title}</h4>
-                        <p class="text-sm text-gray-600 mb-2">${book.author}</p>
-                        <p class="text-xs text-gray-500 mb-2">ISBN: ${book.isbn}</p>
-                        <span class="inline-block px-3 py-1 rounded-full text-xs font-semibold ${book.available ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
-                            ${book.available ? '✓ Tersedia' : '✗ Dipinjam'}
+                        <h4 class="font-bold text-gray-900 mb-1">${book.book_title}</h4>
+                        <p class="text-sm text-gray-600 mb-2">Oleh: ${book.author || 'Unknown'}</p>
+                        <p class="text-xs text-gray-500 mb-2">${book.category_name || 'Umum'}</p>
+                        <span class="inline-block px-3 py-1 rounded-full text-xs font-semibold ${isAvailable ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+                            ${isAvailable ? '✓ Tersedia' : '✗ Dipinjam'}
                         </span>
                     </div>
                 </div>`;
@@ -108,17 +128,13 @@ document.addEventListener('click', function(e) {
 // ===== Dashboard Stats =====
 async function loadDashboardStats() {
     try {
-        // Fetch from API endpoint
-        const response = await fetch('/NOVA-Library/api/dashboard-stats.php');
-        if (!response.ok) throw new Error('Failed to load stats');
-        
-        const stats = await response.json();
-        document.getElementById('borrowedCount').textContent = stats.borrowed || '0';
-        document.getElementById('waitingCount').textContent = stats.waiting || '0';
-        document.getElementById('historyCount').textContent = stats.history || '0';
+        // TODO: Create a proper stats controller
+        // For now, just set default values to avoid 404 errors
+        document.getElementById('borrowedCount').textContent = '-';
+        document.getElementById('waitingCount').textContent = '-';
+        document.getElementById('historyCount').textContent = '-';
     } catch (error) {
         console.error('Error loading stats:', error);
-        // Fallback to demo data
         document.getElementById('borrowedCount').textContent = '0';
         document.getElementById('waitingCount').textContent = '0';
         document.getElementById('historyCount').textContent = '0';

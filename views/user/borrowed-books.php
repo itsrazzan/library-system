@@ -13,6 +13,7 @@ if (session_status() === PHP_SESSION_NONE) {
 // Include helpers and database
 require_once __DIR__ . '/../../config/helpers.php';
 require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../../models/BookLending.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
@@ -38,51 +39,35 @@ if (!$userId) {
     exit;
 }
 
-// Fetch borrowed books from database
+// Fetch borrowed books and penalties from database
 $borrowedBooks = [];
 $totalBorrowed = 0;
 $dueToday = 0;
 $overdue = 0;
+$totalPenalty = 0;
 
 try {
     $database = new Database();
     $conn = $database->getConnection();
     
     if ($conn) {
-        // Query to get active borrowed books (return_date is NULL)
-        $query = "
-            SELECT 
-                bl.loan_id,
-                bl.book_id,
-                bl.loan_date,
-                bl.due_date,
-                b.book_title,
-                b.author,
-                b.publisher,
-                b.image_path,
-                bc.category_name
-            FROM booklending bl
-            INNER JOIN book b ON bl.book_id = b.book_id
-            LEFT JOIN bookcategory bc ON b.category_id = bc.category_id
-            WHERE bl.id = :user_id 
-            AND bl.return_date IS NULL
-            ORDER BY bl.due_date ASC
-        ";
+        $bookLending = new BookLending($conn);
         
-        $stmt = $conn->prepare($query);
-        $stmt->bindParam(':user_id', $userId, PDO::PARAM_INT);
-        $stmt->execute();
-        $borrowedBooks = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+        // Get active borrowings for this user (with penalty calculation)
+        $borrowedBooks = $bookLending->getActiveBorrowingsByUser($userId);
         $totalBorrowed = count($borrowedBooks);
         
-        // Calculate due today and overdue
+        // Get total penalty for user
+        $totalPenalty = $bookLending->getTotalPenaltyByUser($userId);
+        
+        // Calculate due today, overdue, and current penalties
         $today = date('Y-m-d');
         foreach ($borrowedBooks as $book) {
             if ($book['due_date'] === $today) {
                 $dueToday++;
             } elseif ($book['due_date'] < $today) {
                 $overdue++;
+                $totalPenalty += $book['penalty_amount'];
             }
         }
     }
@@ -279,6 +264,24 @@ function getProgressColor($progress) {
                 </h1>
                 <p class="text-xl text-gray-600">Kelola dan pantau buku yang sedang Anda pinjam</p>
             </div>
+
+            <?php if ($totalPenalty > 0): ?>
+            <!-- Penalty Alert -->
+            <div class="bg-gradient-to-r from-red-50 to-orange-50 border-l-4 border-red-500 rounded-xl p-6 mb-8">
+                <div class="flex items-start">
+                    <div class="flex-shrink-0">
+                        <svg class="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                    </div>
+                    <div class="ml-4 flex-1">
+                        <h3 class="text-lg font-bold text-red-800 mb-1">⚠️ Anda Memiliki Denda!</h3>
+                        <p class="text-red-700 mb-2">Total denda keterlambatan: <span class="font-bold text-xl">Rp <?php echo number_format($totalPenalty, 0, ',', '.'); ?></span></p>
+                        <p class="text-sm text-red-600">Denda dihitung Rp 2.000 per hari keterlambatan. Segera kembalikan buku untuk menghindari denda yang lebih besar.</p>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
 
             <!-- Summary Cards -->
             <div class="grid md:grid-cols-3 gap-6 mb-8">
